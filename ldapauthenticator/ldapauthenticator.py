@@ -84,6 +84,10 @@ class LDAPAuthenticator(Authenticator):
     )
 
     @gen.coroutine
+    def pre_spawn_start(self, user, spawner):
+        self.log.warn("HIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII")
+
+    @gen.coroutine
     def authenticate(self, handler, data):
         username = data['username']
         password = data['password']
