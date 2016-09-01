@@ -1,8 +1,13 @@
 import ldap3
 import re
+import sys
+import os
 
 from jupyterhub.auth import Authenticator
 from tornado import gen
+from tornado.ioloop import IOLoop
+from tornado.iostream import StreamClosedError
+from tornado.process import Subprocess
 from traitlets import Unicode, Int, Bool, Union, List
 
 
@@ -84,8 +89,55 @@ class LDAPAuthenticator(Authenticator):
     )
 
     @gen.coroutine
+    def relog_stderr(self, stderr):
+        """
+        Shamelessly pawned from https://github.com/jupyterhub/sudospawner/blob/master/sudospawner/spawner.py
+        """
+        while not stderr.closed():
+            try:
+                line = yield stderr.read_until(b'\n')
+            except StreamClosedError:
+                return
+            else:
+                # TODO: log instead of write to stderr directly?
+                # If we do that, will get huge double-prefix messages:
+                # [I date JupyterHub] [W date SingleUser] msg...
+                sys.stderr.write(line.decode('utf8', 'replace'))
+
+    @gen.coroutine
     def pre_spawn_start(self, user, spawner):
-        self.log.warn("HIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII")
+        """
+        Shamelessly pawned from https://github.com/jupyterhub/sudospawner/blob/master/sudospawner/spawner.py
+        """
+        # Add user to jupyterhub group
+        cmd = ['sudo', '-n', 'usermod', '-a', '-G', 'jupyterhub', user.name]
+        self.log.warn('Running command %s' % ' '.join(cmd))
+
+        p = Subprocess(cmd, stdin=Subprocess.STREAM, stdout=Subprocess.STREAM, stderr=Subprocess.STREAM)
+        f = self.relog_stderr(p.stderr)
+        # hand the stderr future to the IOLoop so it isn't orphaned,
+        # even though we aren't going to wait for it
+        IOLoop.current().add_callback(lambda : f)
+
+        p.stdin.close()
+        data = yield p.stdout.read_until_close()
+
+        # Add user to jupyterhub group
+        if os.path.exists('/home/' + user.name):
+            self.log.warn("Home directory for %s already exists, continuing..." % user.name)
+        else:
+            self.log.warn("Home directory does NOT exist for %s, creating now..." % user.name)
+            cmd = ['sudo', '-n', 'mkhomedir_helper', user.name]
+            self.log.warn('Running command %s' % ' '.join(cmd))
+
+            p = Subprocess(cmd, stdin=Subprocess.STREAM, stdout=Subprocess.STREAM, stderr=Subprocess.STREAM)
+            f = self.relog_stderr(p.stderr)
+            # hand the stderr future to the IOLoop so it isn't orphaned,
+            # even though we aren't going to wait for it
+            IOLoop.current().add_callback(lambda : f)
+
+            p.stdin.close()
+            data = yield p.stdout.read_until_close()
 
     @gen.coroutine
     def authenticate(self, handler, data):
